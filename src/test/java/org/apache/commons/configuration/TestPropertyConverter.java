@@ -18,12 +18,19 @@
 package org.apache.commons.configuration;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import java.beans.beancontext.BeanContextServicesSupport;
+import java.beans.beancontext.BeanContextSupport;
 import java.lang.annotation.ElementType;
 import java.math.BigDecimal;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
@@ -150,6 +157,267 @@ public class TestPropertyConverter
         assertEquals("1st element", new Integer(1), it.next());
         assertEquals("2nd element", new Integer(2), it.next());
         assertEquals("3rd element", new Integer(3), it.next());
+    }
+
+    /**
+     * Tests that a collection containing itself does not cause an infinite
+     * recursion (StackOverflowError).
+     */
+    @Test
+    public void testToIteratorSelfReferencingCollection()
+    {
+        List<Object> list = new ArrayList<Object>();
+        list.add("a");
+        list.add(list);
+        list.add("b,c");
+
+        Iterator<?> it = PropertyConverter.toIterator(list, ',');
+
+        assertEquals("1st element", "a", it.next());
+        assertEquals("2nd element", "b", it.next());
+        assertEquals("3rd element", "c", it.next());
+        assertFalse("too many elements", it.hasNext());
+    }
+
+    /**
+     * Tests that an indirect cycle in a tree of collections does not cause an
+     * infinite recursion.
+     */
+    @Test
+    public void testToIteratorIndirectCycle()
+    {
+        List<Object> list1 = new ArrayList<Object>();
+        List<Object> list2 = new ArrayList<Object>();
+        List<Object> list3 = new ArrayList<Object>();
+        list1.add("a");
+        list1.add(list2);
+        list2.add("b");
+        list2.add(list3);
+        list3.add(list1);
+        list3.add("c");
+        list3.add(list2);
+
+        Iterator<?> it = PropertyConverter.toIterator(list1, ',');
+
+        assertEquals("1st element", "a", it.next());
+        assertEquals("2nd element", "b", it.next());
+        assertEquals("3rd element", "c", it.next());
+        assertFalse("too many elements", it.hasNext());
+    }
+
+    /**
+     * Tests that an array containing itself does not cause an infinite
+     * recursion.
+     */
+    @Test
+    public void testToIteratorSelfReferencingArray()
+    {
+        Object[] array = new Object[3];
+        array[0] = "a";
+        array[1] = array;
+        array[2] = new Object[] { "b", array };
+
+        Iterator<?> it = PropertyConverter.toIterator(array, ',');
+
+        assertEquals("1st element", "a", it.next());
+        assertEquals("2nd element", "b", it.next());
+        assertFalse("too many elements", it.hasNext());
+    }
+
+    /**
+     * Tests that a recursive array reference is skipped while the reachable
+     * leaf values are kept.
+     */
+    @Test
+    public void testToIteratorArrayCycle()
+    {
+        Object[] array = new Object[2];
+        array[0] = "value1,value2";
+        array[1] = array;
+
+        assertEquals(Arrays.asList("value1", "value2"),
+                toList(PropertyConverter.toIterator(array, ',')));
+    }
+
+    /**
+     * Tests that a recursive list-array cycle is skipped while the reachable
+     * leaf values are kept.
+     */
+    @Test
+    public void testToIteratorMixedListAndArrayCycle()
+    {
+        List<Object> list = new ArrayList<Object>();
+        Object[] array = { list };
+        list.add("value1,value2");
+        list.add(array);
+
+        assertEquals(Arrays.asList("value1", "value2"),
+                toList(PropertyConverter.toIterator(list, ',')));
+    }
+
+    /**
+     * Tests that an iterator returning itself does not cause an infinite
+     * recursion.
+     */
+    @Test
+    public void testToIteratorSelfReferencingIterator()
+    {
+        Iterator<Object> iterator = new Iterator<Object>()
+        {
+            private int index;
+
+            public boolean hasNext()
+            {
+                return index <= 100000;
+            }
+
+            public Object next()
+            {
+                return (index++ < 100000) ? (Object) this : "a";
+            }
+
+            public void remove()
+            {
+                throw new UnsupportedOperationException();
+            }
+        };
+
+        Iterator<?> it = PropertyConverter.toIterator(iterator, ',');
+
+        assertEquals("1st element", "a", it.next());
+        assertFalse("too many elements", it.hasNext());
+    }
+
+    /**
+     * Tests that a self-referencing BeanContextSupport (which is a collection)
+     * does not cause an infinite recursion.
+     */
+    @Test
+    public void testToIteratorBeanContextSupport()
+    {
+        assertTrue(toList(PropertyConverter.toIterator(new BeanContextSupport(), ',')).isEmpty());
+        assertTrue(toList(PropertyConverter.toIterator(new BeanContextSupport(new BeanContextSupport()), ',')).isEmpty());
+
+        BeanContextSupport bcs = new BeanContextSupport();
+        bcs.add("bar");
+        List<Object> list = toList(PropertyConverter.toIterator(bcs, ','));
+        assertEquals("size", 1, list.size());
+        assertEquals("1st element", "bar", list.get(0));
+
+        bcs.add(bcs);
+        list = toList(PropertyConverter.toIterator(bcs, ','));
+        assertEquals("size", 1, list.size());
+        assertEquals("1st element", "bar", list.get(0));
+    }
+
+    /**
+     * Tests that a self-referencing BeanContextServicesSupport (which is a
+     * collection) does not cause an infinite recursion.
+     */
+    @Test
+    public void testToIteratorBeanContextServicesSupport()
+    {
+        assertTrue(toList(PropertyConverter.toIterator(new BeanContextServicesSupport(), ',')).isEmpty());
+        assertTrue(toList(PropertyConverter.toIterator(new BeanContextServicesSupport(new BeanContextServicesSupport()), ',')).isEmpty());
+
+        BeanContextSupport bcs = new BeanContextSupport();
+        BeanContextServicesSupport bcss = new BeanContextServicesSupport();
+        bcs.add("bar");
+        bcss.add(bcs);
+        List<Object> list = toList(PropertyConverter.toIterator(bcss, ','));
+        assertEquals("size", 1, list.size());
+        assertEquals("1st element", "bar", list.get(0));
+
+        bcss.add("baz");
+        list = toList(PropertyConverter.toIterator(bcss, ','));
+        assertEquals("size", 2, list.size());
+        assertTrue("bar missing", list.contains("bar"));
+        assertTrue("baz missing", list.contains("baz"));
+
+        bcss.add(bcss);
+        list = toList(PropertyConverter.toIterator(bcss, ','));
+        assertEquals("size", 2, list.size());
+        assertTrue("bar missing", list.contains("bar"));
+        assertTrue("baz missing", list.contains("baz"));
+    }
+
+    /**
+     * Tests that a collection which is referenced several times in a tree
+     * without forming a cycle is not skipped.
+     */
+    @Test
+    public void testToIteratorRepeatedCollection()
+    {
+        List<Object> shared = new ArrayList<Object>();
+        shared.add("x");
+        List<Object> list = new ArrayList<Object>();
+        list.add(shared);
+        list.add(new Object[] { shared, "y" });
+        list.add(shared);
+
+        Iterator<?> it = PropertyConverter.toIterator(list, ',');
+
+        assertEquals("1st element", "x", it.next());
+        assertEquals("2nd element", "x", it.next());
+        assertEquals("3rd element", "y", it.next());
+        assertEquals("4th element", "x", it.next());
+        assertFalse("too many elements", it.hasNext());
+    }
+
+    /**
+     * Tests that duplicate scalar values (even identical instances) are
+     * preserved; only composite values are subject to cycle detection.
+     */
+    @Test
+    public void testToIteratorDuplicateScalars()
+    {
+        Integer one = Integer.valueOf(1);
+        List<Object> list = new ArrayList<Object>();
+        list.add(one);
+        list.add(Integer.valueOf(2));
+        list.add(one);
+        list.add(Boolean.TRUE);
+        list.add(Boolean.TRUE);
+        list.add("a");
+        list.add("a");
+
+        assertEquals(Arrays.asList(one, Integer.valueOf(2), one, Boolean.TRUE,
+                Boolean.TRUE, "a", "a"), toList(PropertyConverter.toIterator(
+                list, ',')));
+    }
+
+    /**
+     * Tests that a Path is treated as a single value. A Path is an Iterable
+     * over Path objects which would otherwise cause an infinite recursion.
+     */
+    @Test
+    public void testToIteratorPath()
+    {
+        Path path = Paths.get("path1");
+        Iterator<?> it = PropertyConverter.toIterator(path, ',');
+        assertSame("Wrong element", path, it.next());
+        assertFalse("too many elements", it.hasNext());
+
+        List<Object> list = new ArrayList<Object>();
+        list.add(Paths.get("path1"));
+        list.add(Paths.get("dir", "path2"));
+        list.add(Paths.get("path1"));
+        assertEquals(Arrays.asList(Paths.get("path1"),
+                Paths.get("dir", "path2"), Paths.get("path1")),
+                toList(PropertyConverter.toIterator(list, ',')));
+    }
+
+    /**
+     * Collects the elements of the specified iterator in a list.
+     */
+    private static List<Object> toList(Iterator<?> it)
+    {
+        List<Object> list = new ArrayList<Object>();
+        while (it.hasNext())
+        {
+            list.add(it.next());
+        }
+        return list;
     }
 
     /**

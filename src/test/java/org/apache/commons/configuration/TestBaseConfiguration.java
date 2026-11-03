@@ -730,4 +730,51 @@ public class TestBaseConfiguration
         assertEquals("Wrong number of original properties", 2, config.getList(
                 key).size());
     }
+
+    /**
+     * Tests adding a collection which contains itself. This must not cause an
+     * infinite recursion (StackOverflowError).
+     */
+    @Test
+    public void testAddPropertySelfReferencingCollection()
+    {
+        List<Object> list = new ArrayList<Object>();
+        list.add("a");
+        list.add(list);
+        list.add("b");
+
+        config.addProperty("test.cycle", list);
+
+        List<Object> values = config.getList("test.cycle");
+        assertEquals("size", 2, values.size());
+        assertEquals("1st element", "a", values.get(0));
+        assertEquals("2nd element", "b", values.get(1));
+    }
+
+    /**
+     * Tests setting a collection which contains itself indirectly and an array
+     * which contains itself.
+     */
+    @Test
+    public void testSetPropertySelfReferencingCollection()
+    {
+        List<Object> list1 = new ArrayList<Object>();
+        List<Object> list2 = new ArrayList<Object>();
+        list1.add("a");
+        list1.add(list2);
+        list2.add(list1);
+        list2.add("b");
+
+        config.setProperty("test.cycle", list1);
+        List<Object> values = config.getList("test.cycle");
+        assertEquals("size", 2, values.size());
+        assertEquals("1st element", "a", values.get(0));
+        assertEquals("2nd element", "b", values.get(1));
+
+        Object[] array = new Object[2];
+        array[0] = array;
+        array[1] = "c";
+        config.setProperty("test.cycle", array);
+        assertEquals("c", config.getProperty("test.cycle"));
+    }
 }

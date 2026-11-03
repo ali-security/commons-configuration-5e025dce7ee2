@@ -26,6 +26,8 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.beans.beancontext.BeanContextServicesSupport;
+import java.beans.beancontext.BeanContextSupport;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -45,12 +47,14 @@ import java.net.URLConnection;
 import java.net.URLStreamHandler;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
 import org.apache.commons.configuration.reloading.FileChangedReloadingStrategy;
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.SystemUtils;
 import org.junit.Before;
 import org.junit.Test;
@@ -664,6 +668,178 @@ public class TestPropertiesConfiguration
         assertTrue(config.getBoolean("deeptest"));
         assertTrue(config.getBoolean("deepinclude"));
         assertFalse(config.containsKey("deeptestinvalid"));
+    }
+
+    /**
+     * Helper method for testing the loading of a properties file with cyclic
+     * include statements. Loading must fail with an exception rather than
+     * causing an infinite recursion (StackOverflowError).
+     *
+     * @param fileName the name of the file to load
+     */
+    private void checkIncludeLoadCyclicalReferenceFail(String fileName)
+    {
+        PropertiesConfiguration pc = new PropertiesConfiguration();
+        pc.setBasePath(testBasePath);
+        pc.setFileName(fileName);
+        try
+        {
+            pc.load();
+            fail("Cyclic include not detected!");
+        }
+        catch (ConfigurationException cex)
+        {
+            // expected
+        }
+        assertNull(pc.getString("keyA"));
+    }
+
+    /**
+     * Tests loading a properties file which includes itself.
+     */
+    @Test
+    public void testIncludeLoadCyclicalReferenceFail()
+    {
+        checkIncludeLoadCyclicalReferenceFail("include-cyclical-reference.properties");
+    }
+
+    /**
+     * Tests loading a properties file which includes itself via other files.
+     */
+    @Test
+    public void testIncludeLoadCyclicalMultiStepReferenceFail()
+    {
+        checkIncludeLoadCyclicalReferenceFail("include-cyclical-root.properties");
+    }
+
+    /**
+     * Tests loading a properties file which includes a file including itself.
+     */
+    @Test
+    public void testIncludeIncludeLoadCyclicalReferenceFail()
+    {
+        checkIncludeLoadCyclicalReferenceFail("include-include-cyclical-reference.properties");
+    }
+
+    /**
+     * Tests loading a properties file with cyclic include statements via the
+     * constructor (the file is loaded while the object is constructed).
+     */
+    @Test
+    public void testIncludeLoadCyclicalReferenceConstructor()
+    {
+        try
+        {
+            new PropertiesConfiguration(ConfigurationAssert.getTestFile(
+                    "include-cyclical-root.properties").getAbsolutePath());
+            fail("Cyclic include not detected!");
+        }
+        catch (ConfigurationException cex)
+        {
+            // expected
+        }
+    }
+
+    /**
+     * Tests that a file may be included multiple times as long as no cycle is
+     * formed.
+     */
+    @Test
+    public void testIncludeSameFileTwice() throws ConfigurationException
+    {
+        PropertiesConfiguration pc = new PropertiesConfiguration();
+        pc.setBasePath(testBasePath);
+        pc.load(new StringReader("include = include.properties" + CR
+                + "include = include.properties" + CR));
+        assertEquals("Wrong number of values", 2,
+                pc.getList("include.loaded").size());
+
+        // the configuration can be loaded again
+        pc.load(new StringReader("include = include.properties" + CR));
+        assertEquals("Wrong number of values after reload", 3,
+                pc.getList("include.loaded").size());
+    }
+
+    /**
+     * Tests that a very long property key does not cause a StackOverflowError
+     * when the line is parsed (CONFIGURATION-838).
+     */
+    @Test
+    public void testLargeKey() throws Exception
+    {
+        conf.clear();
+        String key = StringUtils.repeat("x", 10000);
+        conf.load(new StringReader(key));
+        // a line without separator does not define a property with this key
+        assertFalse("Key without separator found", conf.containsKey(key));
+
+        conf.clear();
+        conf.load(new StringReader(key + " = value"));
+        assertEquals("Wrong value of large key", "value", conf.getString(key));
+    }
+
+    private void testCompress840(Collection<?> object)
+    {
+        PropertiesConfiguration configuration = new PropertiesConfiguration();
+        // Stack overflow:
+        PropertyConverter.toIterator(object, PropertiesConfiguration.getDefaultListDelimiter());
+        configuration.addProperty("foo", object);
+        configuration.setProperty("bar", object);
+        configuration.getProperty("foo");
+        configuration.getProperty("bar");
+    }
+
+    @Test
+    public void testCompress840BeanContextServicesSupport()
+    {
+        testCompress840(new BeanContextServicesSupport());
+        testCompress840(new BeanContextServicesSupport(new BeanContextServicesSupport()));
+        BeanContextSupport bcs = new BeanContextSupport();
+        BeanContextServicesSupport bcss = new BeanContextServicesSupport();
+        bcs.add("bar");
+        bcss.add(bcs);
+        testCompress840(bcss);
+        bcss.add("bar");
+        testCompress840(bcss);
+        bcss.add(bcss);
+        testCompress840(bcss);
+    }
+
+    @Test
+    public void testCompress840BeanContextSupport()
+    {
+        testCompress840(new BeanContextSupport());
+        testCompress840(new BeanContextSupport(new BeanContextSupport()));
+        BeanContextSupport bcs = new BeanContextSupport();
+        bcs.add("bar");
+        testCompress840(bcs);
+        bcs.add(bcs);
+        testCompress840(bcs);
+    }
+
+    @Test
+    public void testCompress840ArrayListCycle()
+    {
+        for (int size = 1; size <= 5; size++)
+        {
+            ArrayList<Object> object = new ArrayList<Object>();
+            for (int i = 0; i < size; i++)
+            {
+                object.add(String.valueOf(i));
+                object.add(object);
+                object.add(new ArrayList<Object>(object));
+            }
+            PropertiesConfiguration configuration = new PropertiesConfiguration();
+            configuration.addProperty("foo", object);
+            // At each iteration, the previous flattened values and the new
+            // scalar appear twice: once in the original list and once in its
+            // copy. Therefore, f(n) = 2 * (f(n - 1) + 1), with f(0) = 0,
+            // which gives f(n) = 2^(n + 1) - 2.
+            assertEquals("Wrong number of values", (1 << (size + 1)) - 2,
+                    configuration.getList("foo").size());
+            object.add(object);
+            testCompress840(object);
+        }
     }
 
     /**

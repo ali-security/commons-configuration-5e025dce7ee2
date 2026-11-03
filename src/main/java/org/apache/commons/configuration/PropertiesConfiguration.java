@@ -230,6 +230,15 @@ public class PropertiesConfiguration extends AbstractFileConfiguration
     private boolean includesAllowed = true;
 
     /**
+     * Stores the URLs (in external form) of the include files which are
+     * currently being loaded. This is used for detecting cyclic includes.
+     * Note: This field is created lazily (and must not have an initializer)
+     * because a file may be loaded by a super constructor before the
+     * fields of this class are initialized.
+     */
+    private List<String> includeStack;
+
+    /**
      * Creates an empty PropertyConfiguration object which can be
      * used to synthesize a new Properties file by adding values and
      * then saving().
@@ -563,6 +572,7 @@ public class PropertiesConfiguration extends AbstractFileConfiguration
         {
             copy.setLayout(new PropertiesConfigurationLayout(copy, layout));
         }
+        copy.includeStack = null;
         return copy;
     }
 
@@ -662,7 +672,7 @@ public class PropertiesConfiguration extends AbstractFileConfiguration
         /** The regular expression to parse the key and the value of a property. */
         private static final Pattern PROPERTY_PATTERN = Pattern
                 .compile("(([\\S&&[^\\\\" + new String(SEPARATORS)
-                        + "]]|\\\\.)*)(\\s*(\\s+|[" + new String(SEPARATORS)
+                        + "]]|\\\\.)*+)(\\s*(\\s+|[" + new String(SEPARATORS)
                         + "])\\s*)(.*)");
 
         /** Constant for the index of the group for the key. */
@@ -1489,10 +1499,12 @@ public class PropertiesConfiguration extends AbstractFileConfiguration
      * called by {@code load()} when an {@code include} property
      * is encountered. It tries to resolve relative file names based on the
      * current base path. If this fails, a resolution based on the location of
-     * this properties file is tried.
+     * this properties file is tried. If the file to be included is already
+     * being loaded (i.e. the include statements form a cycle), an exception
+     * is thrown.
      *
      * @param fileName the name of the file to load
-     * @throws ConfigurationException if loading fails
+     * @throws ConfigurationException if loading fails or a cycle is detected
      */
     private void loadIncludeFile(String fileName) throws ConfigurationException
     {
@@ -1511,6 +1523,27 @@ public class PropertiesConfiguration extends AbstractFileConfiguration
             throw new ConfigurationException("Cannot resolve include file "
                     + fileName);
         }
-        load(url);
+
+        // Check for cycles; the external form is compared because
+        // URL.equals() may perform host name resolution
+        if (includeStack == null)
+        {
+            includeStack = new ArrayList<String>();
+        }
+        String urlStr = url.toExternalForm();
+        if (includeStack.contains(urlStr))
+        {
+            throw new ConfigurationException("Cycle detected loading "
+                    + urlStr + ", seen stack: " + includeStack);
+        }
+        includeStack.add(urlStr);
+        try
+        {
+            load(url);
+        }
+        finally
+        {
+            includeStack.remove(includeStack.size() - 1);
+        }
     }
 }

@@ -33,10 +33,12 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import org.apache.commons.lang.BooleanUtils;
 import org.apache.commons.lang.StringUtils;
@@ -73,6 +75,18 @@ public final class PropertyConverter
 
     /** The fully qualified name of {@link javax.mail.internet.InternetAddress} */
     private static final String INTERNET_ADDRESS_CLASSNAME = "javax.mail.internet.InternetAddress";
+
+    /** The fully qualified name of the {@code java.nio.file.Path} interface. */
+    private static final String PATH_CLASSNAME = "java.nio.file.Path";
+
+    /**
+     * The {@code java.nio.file.Path} class if it is available on the current
+     * platform, otherwise <b>null</b>. A {@code Path} is an {@code Iterable}
+     * over its name elements which are {@code Path} objects themselves. So
+     * it has to be treated as a single value when flattening composite values;
+     * otherwise an infinite recursion would occur.
+     */
+    private static final Class<?> PATH_CLASS = loadPathClass();
 
     /**
      * Private constructor prevents instances from being created.
@@ -934,7 +948,7 @@ public final class PropertyConverter
 
     /**
      * Returns an iterator over the simple values of a composite value. This
-     * implementation calls {@link #flatten(Object, char)} and
+     * implementation calls {@link #flatten(Object, char, Map)} and
      * returns an iterator over the returned collection.
      *
      * @param value the value to "split"
@@ -943,7 +957,8 @@ public final class PropertyConverter
      */
     public static Iterator<?> toIterator(Object value, char delimiter)
     {
-        return flatten(value, delimiter).iterator();
+        return flatten(value, delimiter,
+                new IdentityHashMap<Object, Boolean>()).iterator();
     }
 
     /**
@@ -962,14 +977,22 @@ public final class PropertyConverter
      * <li>Recursive combinations are supported, e.g. a collection containing
      * an array that contains strings: The resulting collection will only
      * contain primitive objects (hence the name &quot;flatten&quot;).</li>
+     * <li>Cyclic combinations (e.g. a collection containing itself directly
+     * or indirectly) are detected: an element which refers to a composite
+     * value that is currently being processed is skipped.</li>
+     * <li>Objects implementing {@code java.nio.file.Path} are treated as
+     * single values (although they are {@code Iterable}).</li>
      * </ul>
      *
      * @param value the value to be processed
      * @param delimiter the delimiter for String values
+     * @param dejaVu the composite values on the current recursion path; used
+     *        for detecting cycles (identity based)
      * @return a &quot;flat&quot; collection containing all primitive values of
      *         the passed in object
      */
-    private static Collection<?> flatten(Object value, char delimiter)
+    private static Collection<?> flatten(Object value, char delimiter,
+            Map<Object, Boolean> dejaVu)
     {
         if (value instanceof String)
         {
@@ -981,27 +1004,43 @@ public final class PropertyConverter
         }
 
         Collection<Object> result = new LinkedList<Object>();
-        if (value instanceof Iterable)
+        if (isRecursiveContainer(value))
         {
-            flattenIterator(result, ((Iterable<?>) value).iterator(), delimiter);
-        }
-        else if (value instanceof Iterator)
-        {
-            flattenIterator(result, (Iterator<?>) value, delimiter);
+            if (dejaVu.containsKey(value))
+            {
+                // the value contains itself, skip it to avoid an infinite loop
+                return result;
+            }
+            dejaVu.put(value, Boolean.TRUE);
+            try
+            {
+                if (value instanceof Iterable)
+                {
+                    flattenIterator(result, ((Iterable<?>) value).iterator(),
+                            delimiter, dejaVu);
+                }
+                else if (value instanceof Iterator)
+                {
+                    flattenIterator(result, (Iterator<?>) value, delimiter,
+                            dejaVu);
+                }
+                else
+                {
+                    for (int len = Array.getLength(value), idx = 0; idx < len; idx++)
+                    {
+                        result.addAll(flatten(Array.get(value, idx), delimiter,
+                                dejaVu));
+                    }
+                }
+            }
+            finally
+            {
+                dejaVu.remove(value);
+            }
         }
         else if (value != null)
         {
-            if (value.getClass().isArray())
-            {
-                for (int len = Array.getLength(value), idx = 0; idx < len; idx++)
-                {
-                    result.addAll(flatten(Array.get(value, idx), delimiter));
-                }
-            }
-            else
-            {
-                result.add(value);
-            }
+            result.add(value);
         }
 
         return result;
@@ -1014,12 +1053,63 @@ public final class PropertyConverter
      * @param target the target collection
      * @param it the iterator to process
      * @param delimiter the delimiter for String values
+     * @param dejaVu the composite values on the current recursion path
      */
-    private static void flattenIterator(Collection<Object> target, Iterator<?> it, char delimiter)
+    private static void flattenIterator(Collection<Object> target,
+            Iterator<?> it, char delimiter, Map<Object, Boolean> dejaVu)
     {
         while (it.hasNext())
         {
-            target.addAll(flatten(it.next(), delimiter));
+            target.addAll(flatten(it.next(), delimiter, dejaVu));
+        }
+    }
+
+    /**
+     * Checks whether the specified value is a composite value whose elements
+     * have to be processed recursively by {@code flatten()}. This is the case
+     * for iterators, {@code Iterable} objects, and arrays. Objects of type
+     * {@code java.nio.file.Path} are an exception: they are {@code Iterable}
+     * over objects of their own type, so they are treated as single values.
+     *
+     * @param value the value to be checked
+     * @return a flag whether this is a composite value
+     */
+    private static boolean isRecursiveContainer(Object value)
+    {
+        if (value == null || isPath(value))
+        {
+            return false;
+        }
+        return value instanceof Iterator || value instanceof Iterable
+                || value.getClass().isArray();
+    }
+
+    /**
+     * Checks whether the specified object is a {@code java.nio.file.Path}.
+     *
+     * @param value the object to be checked
+     * @return a flag whether this object is a {@code Path}
+     */
+    private static boolean isPath(Object value)
+    {
+        return PATH_CLASS != null && PATH_CLASS.isInstance(value);
+    }
+
+    /**
+     * Obtains the class object for {@code java.nio.file.Path}. This class is
+     * not available on all supported platforms; so it is loaded dynamically.
+     *
+     * @return the {@code Path} class or <b>null</b> if it is not available
+     */
+    private static Class<?> loadPathClass()
+    {
+        try
+        {
+            return Class.forName(PATH_CLASSNAME);
+        }
+        catch (ClassNotFoundException cnfex)
+        {
+            return null;
         }
     }
 

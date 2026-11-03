@@ -194,6 +194,28 @@ public class TestHierarchicalConfiguration
         assertEquals(42, config.getInt("test.items.item"));
     }
 
+    /**
+     * Tests setting and adding a collection which contains itself. This must
+     * not cause an infinite recursion (StackOverflowError).
+     */
+    @Test
+    public void testSetPropertySelfReferencingCollection()
+    {
+        List<Object> list = new ArrayList<Object>();
+        list.add("tab1");
+        list.add(list);
+        list.add("tab2");
+
+        config.setProperty("tables.table.name", list);
+        assertEquals("tab1", config.getString("tables.table(0).name"));
+        assertEquals("tab2", config.getString("tables.table(1).name"));
+
+        config.addProperty("test.items.item", list);
+        assertEquals(1, config.getMaxIndex("test.items.item"));
+        assertEquals("tab1", config.getString("test.items.item(0)"));
+        assertEquals("tab2", config.getString("test.items.item(1)"));
+    }
+
     @Test
     public void testClear()
     {
