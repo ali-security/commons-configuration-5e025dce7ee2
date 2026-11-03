@@ -1,0 +1,82 @@
+# Sealed-libraries build: upstream commons-configuration 1.10 has no GitHub Actions CI.
+# Mirrors the project's own Maven build (pom.xml, commons-parent 32): compile + test with
+# JDK 7 (the release's Build-Jdk was 1.7.0_25, target 1.5) via commons-parent's java-1.7
+# profile, while Maven 3.3.9 itself runs on JDK 8 (modern TLS to Maven Central).
+name: seal-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Surefire -Dtest selector; empty runs the full suite"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MAVEN_VERSION: 3.3.9
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 7 (compiler + test JVM)
+        id: jdk7
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "7"
+
+      - name: Set up JDK 8 (Maven runtime)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install Maven ${{ env.MAVEN_VERSION }}
+        run: |
+          curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" -o /tmp/maven.tgz
+          tar -xzf /tmp/maven.tgz -C /tmp
+          echo "/tmp/apache-maven-${MAVEN_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Build and test
+        env:
+          JAVA_1_7_HOME: ${{ steps.jdk7.outputs.path }}
+          MAVEN_OPTS: -Xmx1g -Duser.name=henning -Dhttps.protocols=TLSv1.2
+        run: |
+          mvn -v
+          "$JAVA_1_7_HOME/bin/java" -version
+          COMMON="-B -e -Pjava-1.7 -Dmaven.javadoc.skip=true -Dgpg.skip=true -Drat.skip=true -Danimal.sniffer.skip=true"
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            mvn $COMMON clean package -Dtest='${{ inputs.test-filter }}' -DfailIfNoTests=false
+          else
+            mvn $COMMON clean package
+          fi
+
+      - name: Report skipped tests with reasons
+        if: always()
+        run: |
+          shopt -s nullglob
+          files=(target/surefire-reports/TEST-*.xml)
+          [ ${#files[@]} -eq 0 ] && { echo "no surefire reports"; exit 0; }
+          python3 - "${files[@]}" <<'EOF'
+          import sys, xml.etree.ElementTree as ET
+          total = fail = err = skip = 0
+          for f in sys.argv[1:]:
+              r = ET.parse(f).getroot()
+              total += int(r.get("tests", 0)); fail += int(r.get("failures", 0))
+              err += int(r.get("errors", 0)); skip += int(r.get("skipped", 0))
+              for tc in r.iter("testcase"):
+                  s = tc.find("skipped")
+                  if s is not None:
+                      print("SKIPPED %s.%s: %s" % (tc.get("classname"), tc.get("name"), s.get("message") or "(no message)"))
+          print("SUREFIRE TOTAL: tests=%d passed=%d failures=%d errors=%d skipped=%d" % (total, total - fail - err - skip, fail, err, skip))
+          EOF
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: commons-configuration-1.10
+          path: target/commons-configuration-1.10.jar
+          if-no-files-found: error

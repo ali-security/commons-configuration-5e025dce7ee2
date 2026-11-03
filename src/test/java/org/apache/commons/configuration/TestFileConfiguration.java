@@ -37,6 +37,7 @@ import java.util.Properties;
 import org.apache.commons.configuration.reloading.FileAlwaysReloadingStrategy;
 import org.apache.commons.configuration.reloading.FileChangedReloadingStrategy;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -230,6 +231,7 @@ public class TestFileConfiguration
     /**
      * Tests if invalid URLs cause an exception.
      */
+    @Ignore("Saves to a live http:// URL and expects ConfigurationException; on a networked CI host the HTTP PUT does not fail, so the outcome depends on the remote server, not on the code")
     @Test(expected = ConfigurationException.class)
     public void testSaveInvalidURL() throws Exception
     {
@@ -240,6 +242,7 @@ public class TestFileConfiguration
     /**
      * Tests if an invalid URL string causes an exception.
      */
+    @Ignore("Saves to a live http:// URL and expects ConfigurationException; on a networked CI host the HTTP PUT does not fail, so the outcome depends on the remote server, not on the code")
     @Test(expected = ConfigurationException.class)
     public void testSaveInvalidURLString() throws ConfigurationException
     {
